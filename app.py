@@ -1,0 +1,312 @@
+"""
+Inovelli mmWave Visualizer Backend
+Provides a real-time MQTT-to-WebSocket bridge for Home Assistant Ingress.
+Handles device discovery, Zigbee byte array decoding, and two-way configuration.
+"""
+
+import json
+import os
+import traceback
+import time
+import gc 
+import threading 
+from flask import Flask, render_template, request
+from flask_socketio import SocketIO
+import paho.mqtt.client as mqtt
+import logging
+import os
+
+# Suppress the Werkzeug development server warning
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
+
+
+# --- STANDALONE CONFIGURATION ---
+# Defaults to localhost for standalone, but allows Docker Compose override
+MQTT_BROKER = os.getenv('MQTT_BROKER', 'localhost')
+MQTT_PORT = int(os.getenv('MQTT_PORT', 1883))
+MQTT_USERNAME = os.getenv('MQTT_USERNAME', '')
+MQTT_PASSWORD = os.getenv('MQTT_PASSWORD', '')
+Z2M_BASE_TOPIC = os.getenv('Z2M_BASE_TOPIC', 'zigbee2mqtt')
+
+app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+current_topic = None
+
+# Stores device names, topics, and cached zone configurations
+device_list = {} 
+last_update_time = 0
+
+def on_connect(client, userdata, flags, rc):
+    print(f"Connected to MQTT Broker with code {rc}", flush=True)
+    client.subscribe(f"{Z2M_BASE_TOPIC}/#")
+
+def on_message(client, userdata, msg):
+    global device_list, last_update_time
+    try:
+        topic = msg.topic
+        
+        # --- PRE-FILTERING (CPU/MEMORY OPTIMIZATION) ---
+        # Decode string without JSON parsing to quickly reject non-mmWave network traffic.
+        payload_str = msg.payload.decode().strip()
+        
+        # Ensure valid JSON wrapper
+        if not payload_str or not payload_str.startswith('{'):
+            return 
+            
+        # Bypass JSON parsing for discovery if the message is from an irrelevant device
+        if topic != current_topic:
+            if "mmWaveVersion" not in payload_str:
+                return 
+                
+            payload = json.loads(payload_str)
+            topic_parts = topic.split('/')
+            if len(topic_parts) == 2:
+                friendly_name = topic_parts[1]
+                if friendly_name not in device_list:
+                    print(f"Discovered Inovelli mmWave Switch: {friendly_name}", flush=True)
+                    device_list[friendly_name] = {'friendly_name': friendly_name, 'topic': topic, 'interference_zones': []}
+                    socketio.emit('device_list', [d for d in device_list.values()])
+            return 
+
+        # --- CURRENT DEVICE PROCESSING ---
+        payload = json.loads(payload_str)
+
+        fname = next((name for name, data in device_list.items() if data['topic'] == current_topic), None)
+        if not fname: return
+
+        # Emit standard HA states (Occupancy, Illuminance, etc.)
+        if "state" in payload or "illuminance" in payload:
+            socketio.emit('device_config', payload)
+
+        # Ignore raw byte processing for standard switches
+        is_mmwave = payload.get("mmWaveVersion") is not None
+
+        # --- EXTRACT STANDARD DETECTION ZONE ---
+        if "mmWaveDepthMax" in payload:
+            zone_config = {
+                "x_min": int(payload.get("mmWaveWidthMin", -400) or -400),
+                "x_max": int(payload.get("mmWaveWidthMax", 400) or 400),
+                "y_min": int(payload.get("mmWaveDepthMin", 0) or 0),
+                "y_max": int(payload.get("mmWaveDepthMax", 600) or 600)
+            }
+            
+            # Cache and emit to UI if the zone has changed
+            if 'zone_config' not in device_list[fname] or device_list[fname]['zone_config'] != zone_config:
+                device_list[fname]['zone_config'] = zone_config
+                socketio.emit('zone_config', zone_config)
+
+        # --- PROCESS RAW BYTES (ZCL Cluster 0xFC32) ---
+        if payload.get("0") == 29 and payload.get("1") == 47 and payload.get("2") == 18:
+            cmd_id = payload.get("4")
+            
+            # Bitwise parser for Signed Int16
+            def get_int16(idx):
+                low = int(payload.get(str(idx)) or 0)
+                high = int(payload.get(str(idx+1)) or 0)
+                val = (high << 8) | low
+                return val if val < 32768 else val - 65536
+
+            # --- 0x01: Target Info Reporting (Movement Data) ---
+            if cmd_id == 1:
+                # Throttle UI updates to 10Hz Max
+                current_time = time.time()
+                if (current_time - last_update_time) < 0.1:
+                    return 
+                last_update_time = current_time
+
+                seq_num = payload.get("3")
+                num_targets = payload.get("5", 0)
+                targets = []
+                offset = 6
+
+                for _ in range(num_targets):
+                    if str(offset+8) not in payload: break
+                    targets.append({
+                        "id": int(payload.get(str(offset+8)) or 0),
+                        "x": get_int16(offset), "y": get_int16(offset+2),
+                        "z": get_int16(offset+4), "dop": get_int16(offset+6)
+                    })
+                    offset += 9
+                
+                socketio.emit('new_data', {"seq": seq_num, "targets": targets})
+
+                # Explicitly delete the array to clear the RAM buffer
+                del targets
+
+            # --- 0x02: Interference Area Reporting ---
+            elif cmd_id == 2 and fname:
+                try:
+                    int_zones = []
+                    offset = 6  
+                    num_zones = payload.get("5", 0) 
+                    
+                    for _ in range(num_zones):
+                        if str(offset+11) not in payload: break
+                        x_min = get_int16(offset)
+                        x_max = get_int16(offset+2)
+                        y_min = get_int16(offset+4)
+                        y_max = get_int16(offset+6)
+                        
+                        # Only append zones with valid non-zero configurations
+                        if x_max > x_min and y_max > y_min:
+                            int_zones.append({"x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max})
+                        
+                        # Standard offset for current firmware is 12 bytes per zone
+                        offset += 12
+                    
+                    device_list[fname]['interference_zones'] = int_zones
+                    print(f"Interference Zones Updated for {fname}: {int_zones}", flush=True)
+                    socketio.emit('interference_zones', int_zones)
+
+                    del int_zones
+                    
+                except Exception as parse_error:
+                    print(f"Warning: Interference zone packet offset mismatch. Firmware may have updated: {parse_error}", flush=True)
+
+    except Exception as e:
+        print(f"Error parsing message on topic {msg.topic}: {e}", flush=True)
+        traceback.print_exc()
+
+mqtt_client = mqtt.Client()
+if MQTT_USERNAME and MQTT_PASSWORD:
+    mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+
+mqtt_client.on_connect = on_connect
+mqtt_client.on_message = on_message
+
+try:
+    mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    mqtt_client.loop_start()
+except Exception as e:
+    print(f"Connection Failed: {e}", flush=True)
+
+
+# --- WEBSOCKET HANDLERS ---
+@socketio.on('request_devices')
+def handle_request_devices():
+    socketio.emit('device_list', [d for d in device_list.values()])
+
+@socketio.on('change_device')
+def handle_change_device(new_topic):
+    global current_topic
+    current_topic = new_topic
+    print(f"Switched monitoring to: {new_topic}", flush=True)
+    
+    # Send cached configurations immediately upon switch
+    device_data = next((data for data in device_list.values() if data['topic'] == new_topic), None)
+    if device_data:
+        if 'zone_config' in device_data: socketio.emit('zone_config', device_data['zone_config'])
+        if 'interference_zones' in device_data: socketio.emit('interference_zones', device_data['interference_zones'])
+
+
+# --- PARAMETER CONFIGURATOR ---
+@socketio.on('update_parameter')
+def handle_update_parameter(data):
+    if not current_topic: return
+    
+    param = data.get('param')
+    value = data.get('value')
+
+    # Convert numeric strings back to integers
+    if isinstance(value, str) and value.lstrip('-').isnumeric():
+        value = int(value)
+
+    control_payload = { param: value }
+    set_topic = f"{current_topic}/set"
+    mqtt_client.publish(set_topic, json.dumps(control_payload))
+    print(f"Updated {param} to {value} via {set_topic}", flush=True)
+
+
+# --- FORCE SYNC ---
+@socketio.on('force_sync')
+def handle_force_sync():
+    """
+    Sends an empty payload to the /get topic. 
+    Forces Zigbee2MQTT to query the switch directly and refresh all attributes.
+    """
+    if not current_topic: return
+    
+    # Instant UI reset using cached data
+    device_data = next((data for data in device_list.values() if data['topic'] == current_topic), None)
+    if device_data:
+        if 'zone_config' in device_data: socketio.emit('zone_config', device_data['zone_config'])
+        if 'interference_zones' in device_data: socketio.emit('interference_zones', device_data['interference_zones'])
+
+    get_topic = f"{current_topic}/get"
+    payload = {
+        "state": "",
+        "occupancy": "",
+        "illuminance": "",
+        "mmWaveDepthMax": "",
+        "mmWaveDepthMin": "",
+        "mmWaveWidthMax": "",
+        "mmWaveWidthMin": "",
+        "mmWaveHeightMax": "",
+        "mmWaveHeightMin": "",
+        "mmWaveDetectSensitivity": "",
+        "mmWaveDetectTrigger": "",
+        "mmWaveHoldTime": "",
+        "mmWaveStayLife": "",
+        "mmWaveRoomSizePreset": "",
+        "mmWaveTargetInfoReport": "",
+        "mmWaveVersion": ""
+    }
+    
+    mqtt_client.publish(get_topic, json.dumps(payload))
+    print(f"Force Sync Requested via {get_topic}", flush=True)
+
+
+# --- CONTROL COMMAND SENDER ---
+@socketio.on('send_command')
+def handle_command(cmd_action):
+    """
+    Sends Z2M mapped strings for standard control commands.
+    """
+    if not current_topic: return
+    
+    action_map = {
+        0: "reset_mmwave_module",
+        1: "set_interference",
+        2: "obtain_interference",
+        3: "clear_interference"
+    }
+
+    cmd_string = action_map.get(int(cmd_action))
+
+    if not cmd_string:
+        print(f"Unknown command action: {cmd_action}", flush=True)
+        return
+
+    control_payload = {
+        "mmwave_control_commands": {
+            "controlID": cmd_string
+        }
+    }
+    
+    set_topic = f"{current_topic}/set"
+    mqtt_client.publish(set_topic, json.dumps(control_payload))
+    print(f"Sent mmWave Command: {cmd_string} to {set_topic}", flush=True)
+
+
+# --- RESOURCE MANAGEMENT ---
+# Explicitly clears orphaned Python references generated by the asynchronous socket loop
+def memory_cleanup():
+    while True:
+        time.sleep(30) 
+        gc.collect()
+
+cleanup_thread = threading.Thread(target=memory_cleanup, daemon=True)
+cleanup_thread.start()
+
+
+# --- ROUTES ---
+@app.route('/')
+def index():
+    # Remove Ingress header logic, just use empty string or hardcoded path
+    return render_template('index.html', ingress_path='')
+
+if __name__ == '__main__':
+    socketio.run(app, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)

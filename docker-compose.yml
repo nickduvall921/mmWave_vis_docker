@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  mmwave-visualizer:
+    build: .
+    container_name: mmwave_vis
+    ports:
+      - "5000:5000"
+    environment:
+      - MQTT_BROKER=192.168.1.XX  # <--- CHANGE TO YOUR MQTT BROKER IP
+      - MQTT_PORT=1883
+      - MQTT_USERNAME=XXXX  # <--- OPTIONAL
+      - MQTT_PASSWORD=XXXX  # <--- OPTIONAL
+      - Z2M_BASE_TOPIC=zigbee2mqtt
+    restart: unless-stopped
