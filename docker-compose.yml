@@ -5,9 +5,9 @@ services:
     ports:
       - "5000:5000"
     environment:
-      - MQTT_BROKER=192.168.1.XX  # <--- CHANGE TO YOUR MQTT BROKER IP
+      - MQTT_BROKER=192.168.1.XX  # Change to your Broker IP
       - MQTT_PORT=1883
-      - MQTT_USERNAME=XXXX  # <--- OPTIONAL
-      - MQTT_PASSWORD=XXXX  # <--- OPTIONAL
+      - MQTT_USERNAME=your_user
+      - MQTT_PASSWORD=your_password
       - Z2M_BASE_TOPIC=zigbee2mqtt
     restart: unless-stopped
