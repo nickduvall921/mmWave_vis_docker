@@ -15,9 +15,7 @@ This is the standalone Docker version of the Inovelli mmWave Visualizer. It deco
 * **🧱 Multi-Zone Support:** Configure up to 4 areas per zone type (Requires recent Inovelli Firmware & Z2M version).  
 * **✨ Vibe:** AI assisted in the design of this app.
 
-## **🚀 Installation (Docker Compose)**
-
-The easiest way to run the visualizer is using Docker Compose.
+## **🚀 Installation (Via Docker Compose)**
 
 1. **Create a docker-compose.yml file:**
 
