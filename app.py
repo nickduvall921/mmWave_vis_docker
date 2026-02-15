@@ -26,6 +26,10 @@ MQTT_USERNAME = os.getenv('MQTT_USERNAME', '')
 MQTT_PASSWORD = os.getenv('MQTT_PASSWORD', '')
 MQTT_BASE_TOPIC = os.getenv('Z2M_BASE_TOPIC', 'zigbee2mqtt')
 
+# TLS/SSL Configuration
+MQTT_USE_TLS = os.getenv('MQTT_USE_TLS', 'false').lower() == 'true'
+MQTT_TLS_INSECURE = os.getenv('MQTT_TLS_INSECURE', 'false').lower() == 'true'  # Skip certificate verification
+
 app = Flask(__name__)
 # Standard SocketIO init for Docker environment
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -172,17 +176,41 @@ def on_message(client, userdata, msg):
 
 # --- MQTT CLIENT SETUP ---
 mqtt_client = mqtt.Client()
+
+# Configure authentication
 if MQTT_USERNAME and MQTT_PASSWORD:
     mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+
+# Configure TLS/SSL
+if MQTT_USE_TLS:
+    import ssl
+    print(f"Configuring TLS/SSL for MQTT connection", flush=True)
+
+    try:
+        # Use system default certificates
+        if MQTT_TLS_INSECURE:
+            mqtt_client.tls_set(cert_reqs=ssl.CERT_NONE)
+            mqtt_client.tls_insecure_set(True)
+            print(f"WARNING: TLS certificate verification is DISABLED", flush=True)
+        else:
+            mqtt_client.tls_set()
+            print(f"Using system default certificates", flush=True)
+
+        print(f"TLS/SSL configuration successful", flush=True)
+    except Exception as tls_error:
+        print(f"TLS Configuration Error: {tls_error}", flush=True)
+        traceback.print_exc()
 
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 
 try:
+    print(f"Connecting to MQTT broker at {MQTT_BROKER}:{MQTT_PORT} (TLS: {MQTT_USE_TLS})", flush=True)
     mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
     mqtt_client.loop_start()
 except Exception as e:
     print(f"MQTT Connection Failed: {e}", flush=True)
+    traceback.print_exc()
 
 # --- WEBSOCKET HANDLERS ---
 @socketio.on('request_devices')
