@@ -1,13 +1,18 @@
 services:
   mmwave-visualizer:
-    build: .
+    image: ghcr.io/nickduvall921/mmwave_vis_docker:main
     container_name: mmwave_vis
     ports:
       - "5000:5000"
+    volumes:
+      # Optional: mount a directory for persistent config (created automatically on first save via UI)
+      - ./mmwave_data:/data
     environment:
-      - MQTT_BROKER=192.168.1.XX  # Change to your Broker IP
+      # These ENV vars are used as fallbacks if /data/config.json does not exist.
+      # You can configure the broker via the UI (⚙ Config button) instead.
+      - MQTT_BROKER=192.168.1.XX   # Change to your Broker IP
       - MQTT_PORT=1883
-      - MQTT_USERNAME=your_user
-      - MQTT_PASSWORD=your_password
+      - MQTT_USERNAME=your_user    # Optional
+      - MQTT_PASSWORD=your_password # Optional
       - Z2M_BASE_TOPIC=zigbee2mqtt
     restart: unless-stopped
