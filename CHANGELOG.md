@@ -13,7 +13,7 @@
 
 ### Added
 - **TLS/SSL support for MQTT** (ported from PR #2 by @switzer60):
-  - `MQTT_USE_TLS=true` env var / config file key enables TLS on the broker connection.
+  - `MQTT_USE_TLS=true` env var / config file key enables TLS on the broker connection
   - `MQTT_TLS_INSECURE=true` disables certificate verification (useful for self-signed certs on local networks; not recommended for production).
   - `MQTT_TLS_CA_CERT=/path/to/ca.crt` allows specifying a custom CA certificate file (e.g. for a self-signed CA with correct hostname, the safer alternative to `MQTT_TLS_INSECURE`).
   - All three options configurable via the **⚙ Config** UI panel in addition to ENV vars.
