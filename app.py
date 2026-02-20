@@ -8,6 +8,7 @@ Config priority: /data/config.json (persistent file) > Environment Variables
 
 import json
 import os
+import ssl
 import traceback
 import time
 import threading
@@ -23,6 +24,12 @@ log.setLevel(logging.ERROR)
 # --- CONFIGURATION: File takes priority over ENV variables ---
 CONFIG_PATH = '/data/config.json'
 
+def _to_bool(value):
+    """Convert string 'true'/'false' or actual bool to bool."""
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() == 'true'
+
 def load_config():
     """Load config from persistent file, falling back to environment variables."""
     try:
@@ -30,28 +37,37 @@ def load_config():
             cfg = json.load(f)
             print(f"Loaded configuration from {CONFIG_PATH}", flush=True)
             return {
-                'mqtt_broker':    cfg.get('mqtt_broker', os.getenv('MQTT_BROKER', 'localhost')),
-                'mqtt_port':      int(cfg.get('mqtt_port', os.getenv('MQTT_PORT', 1883))),
-                'mqtt_username':  cfg.get('mqtt_username', os.getenv('MQTT_USERNAME', '')),
-                'mqtt_password':  cfg.get('mqtt_password', os.getenv('MQTT_PASSWORD', '')),
-                'mqtt_base_topic': cfg.get('mqtt_base_topic', os.getenv('Z2M_BASE_TOPIC', 'zigbee2mqtt')),
+                'mqtt_broker':     cfg.get('mqtt_broker',     os.getenv('MQTT_BROKER',     'localhost')),
+                'mqtt_port':       int(cfg.get('mqtt_port',   os.getenv('MQTT_PORT',       1883))),
+                'mqtt_username':   cfg.get('mqtt_username',   os.getenv('MQTT_USERNAME',   '')),
+                'mqtt_password':   cfg.get('mqtt_password',   os.getenv('MQTT_PASSWORD',   '')),
+                'mqtt_base_topic': cfg.get('mqtt_base_topic', os.getenv('Z2M_BASE_TOPIC',  'zigbee2mqtt')),
+                'mqtt_use_tls':    _to_bool(cfg.get('mqtt_use_tls',    os.getenv('MQTT_USE_TLS',    'false'))),
+                'mqtt_tls_insecure': _to_bool(cfg.get('mqtt_tls_insecure', os.getenv('MQTT_TLS_INSECURE', 'false'))),
+                'mqtt_tls_ca_cert': cfg.get('mqtt_tls_ca_cert', os.getenv('MQTT_TLS_CA_CERT', '')),
             }
     except FileNotFoundError:
         print(f"No config file found at {CONFIG_PATH}. Using environment variables.", flush=True)
         return {
-            'mqtt_broker':    os.getenv('MQTT_BROKER', 'localhost'),
-            'mqtt_port':      int(os.getenv('MQTT_PORT', 1883)),
-            'mqtt_username':  os.getenv('MQTT_USERNAME', ''),
-            'mqtt_password':  os.getenv('MQTT_PASSWORD', ''),
-            'mqtt_base_topic': os.getenv('Z2M_BASE_TOPIC', 'zigbee2mqtt'),
+            'mqtt_broker':     os.getenv('MQTT_BROKER',     'localhost'),
+            'mqtt_port':       int(os.getenv('MQTT_PORT',   1883)),
+            'mqtt_username':   os.getenv('MQTT_USERNAME',   ''),
+            'mqtt_password':   os.getenv('MQTT_PASSWORD',   ''),
+            'mqtt_base_topic': os.getenv('Z2M_BASE_TOPIC',  'zigbee2mqtt'),
+            'mqtt_use_tls':    os.getenv('MQTT_USE_TLS',    'false').lower() == 'true',
+            'mqtt_tls_insecure': os.getenv('MQTT_TLS_INSECURE', 'false').lower() == 'true',
+            'mqtt_tls_ca_cert': os.getenv('MQTT_TLS_CA_CERT', ''),
         }
 
 config = load_config()
-MQTT_BROKER    = config['mqtt_broker']
-MQTT_PORT      = config['mqtt_port']
-MQTT_USERNAME  = config['mqtt_username']
-MQTT_PASSWORD  = config['mqtt_password']
-MQTT_BASE_TOPIC = config['mqtt_base_topic']
+MQTT_BROKER      = config['mqtt_broker']
+MQTT_PORT        = config['mqtt_port']
+MQTT_USERNAME    = config['mqtt_username']
+MQTT_PASSWORD    = config['mqtt_password']
+MQTT_BASE_TOPIC  = config['mqtt_base_topic']
+MQTT_USE_TLS     = config['mqtt_use_tls']
+MQTT_TLS_INSECURE = config['mqtt_tls_insecure']
+MQTT_TLS_CA_CERT = config['mqtt_tls_ca_cert']
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -416,11 +432,33 @@ mqtt_client = mqtt.Client()
 if MQTT_USERNAME and MQTT_PASSWORD:
     mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 
+if MQTT_USE_TLS:
+    print(f"Configuring TLS/SSL for MQTT connection", flush=True)
+    try:
+        if MQTT_TLS_INSECURE:
+            # Disable certificate verification — useful for self-signed certs
+            # but should not be used in production
+            mqtt_client.tls_set(cert_reqs=ssl.CERT_NONE)
+            mqtt_client.tls_insecure_set(True)
+            print("WARNING: TLS certificate verification is DISABLED (MQTT_TLS_INSECURE=true)", flush=True)
+        elif MQTT_TLS_CA_CERT:
+            # Use a specific CA certificate file (e.g. self-signed CA with proper hostname)
+            mqtt_client.tls_set(ca_certs=MQTT_TLS_CA_CERT)
+            print(f"TLS configured with CA cert: {MQTT_TLS_CA_CERT}", flush=True)
+        else:
+            # Use the system's default trusted CA bundle
+            mqtt_client.tls_set()
+            print("TLS configured with system default certificates", flush=True)
+    except Exception as tls_error:
+        print(f"TLS configuration error: {tls_error}", flush=True)
+        traceback.print_exc()
+
 mqtt_client.on_connect    = on_connect
 mqtt_client.on_disconnect = on_disconnect
 mqtt_client.on_message    = on_message
 
 try:
+    print(f"Connecting to MQTT broker at {MQTT_BROKER}:{MQTT_PORT} (TLS: {MQTT_USE_TLS})", flush=True)
     mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
     mqtt_client.loop_start()
 except Exception as e:
@@ -619,11 +657,14 @@ def handle_command(cmd_action):
 def get_config():
     """Return current (sanitized) configuration."""
     return json.dumps({
-        'mqtt_broker':    MQTT_BROKER,
-        'mqtt_port':      MQTT_PORT,
-        'mqtt_username':  MQTT_USERNAME,
-        'mqtt_password':  '***' if MQTT_PASSWORD else '',
-        'mqtt_base_topic': MQTT_BASE_TOPIC,
+        'mqtt_broker':      MQTT_BROKER,
+        'mqtt_port':        MQTT_PORT,
+        'mqtt_username':    MQTT_USERNAME,
+        'mqtt_password':    '***' if MQTT_PASSWORD else '',
+        'mqtt_base_topic':  MQTT_BASE_TOPIC,
+        'mqtt_use_tls':     MQTT_USE_TLS,
+        'mqtt_tls_insecure': MQTT_TLS_INSECURE,
+        'mqtt_tls_ca_cert': MQTT_TLS_CA_CERT,
     })
 
 
@@ -635,7 +676,10 @@ def save_config():
         if not new_cfg:
             return json.dumps({'ok': False, 'error': 'No JSON body'}), 400
 
-        allowed_keys = {'mqtt_broker', 'mqtt_port', 'mqtt_username', 'mqtt_password', 'mqtt_base_topic'}
+        allowed_keys = {
+            'mqtt_broker', 'mqtt_port', 'mqtt_username', 'mqtt_password',
+            'mqtt_base_topic', 'mqtt_use_tls', 'mqtt_tls_insecure', 'mqtt_tls_ca_cert'
+        }
         filtered = {k: v for k, v in new_cfg.items() if k in allowed_keys}
 
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)

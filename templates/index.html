@@ -254,6 +254,26 @@
         <div class="input-row"><label>Username:</label>   <input type="text"     id="cfgUser"     placeholder="(optional)"></div>
         <div class="input-row"><label>Password:</label>   <input type="password" id="cfgPass"     placeholder="(optional)"></div>
         <div class="input-row"><label>Base Topic:</label> <input type="text"     id="cfgTopic"    placeholder="zigbee2mqtt"></div>
+        <div style="border-top: 1px solid #444; margin: 12px 0 10px; padding-top: 10px;">
+            <div style="font-size:0.8em; font-weight:bold; color:#00bcd4; margin-bottom:8px;">TLS / SSL</div>
+            <div class="input-row">
+                <label>Enable TLS:</label>
+                <input type="checkbox" id="cfgUseTls" style="width:auto; cursor:pointer;" onchange="updateTlsVisibility()">
+            </div>
+            <div id="tlsOptions" style="display:none;">
+                <div class="input-row">
+                    <label>Skip cert verify:</label>
+                    <input type="checkbox" id="cfgTlsInsecure" style="width:auto; cursor:pointer;">
+                </div>
+                <div class="input-row" id="cfgCaRow">
+                    <label>CA Cert path:</label>
+                    <input type="text" id="cfgCaCert" placeholder="/data/ca.crt (optional)">
+                </div>
+                <p style="font-size:0.75em; color:#ff9800; margin:4px 0 0;">
+                    ⚠ "Skip cert verify" disables certificate validation — only use on trusted networks.
+                </p>
+            </div>
+        </div>
         <div style="display:flex; gap:8px; margin-top:14px;">
             <button class="cmd-btn" style="flex:1;" onclick="closeConfigPanel()">Cancel</button>
             <button class="cmd-btn" style="flex:1; background:#00bcd4; color:#1a1a1a;" onclick="saveConfig()">Save</button>
@@ -584,14 +604,22 @@
         // ---- Config panel ----
         function openConfigPanel() {
             fetch('/api/config').then(r => r.json()).then(cfg => {
-                document.getElementById('cfgBroker').value = cfg.mqtt_broker    || '';
-                document.getElementById('cfgPort').value   = cfg.mqtt_port      || 1883;
-                document.getElementById('cfgUser').value   = cfg.mqtt_username  || '';
-                document.getElementById('cfgPass').value   = '';   // never pre-fill password
-                document.getElementById('cfgTopic').value  = cfg.mqtt_base_topic || 'zigbee2mqtt';
+                document.getElementById('cfgBroker').value     = cfg.mqtt_broker     || '';
+                document.getElementById('cfgPort').value       = cfg.mqtt_port       || 1883;
+                document.getElementById('cfgUser').value       = cfg.mqtt_username   || '';
+                document.getElementById('cfgPass').value       = '';   // never pre-fill password
+                document.getElementById('cfgTopic').value      = cfg.mqtt_base_topic || 'zigbee2mqtt';
+                document.getElementById('cfgUseTls').checked   = !!cfg.mqtt_use_tls;
+                document.getElementById('cfgTlsInsecure').checked = !!cfg.mqtt_tls_insecure;
+                document.getElementById('cfgCaCert').value     = cfg.mqtt_tls_ca_cert || '';
+                updateTlsVisibility();
             }).catch(() => {});
             document.getElementById('configOverlay').style.display = 'block';
             document.getElementById('configPanel').style.display   = 'block';
+        }
+        function updateTlsVisibility() {
+            document.getElementById('tlsOptions').style.display =
+                document.getElementById('cfgUseTls').checked ? 'block' : 'none';
         }
         function closeConfigPanel() {
             document.getElementById('configOverlay').style.display = 'none';
@@ -599,11 +627,14 @@
         }
         function saveConfig() {
             const payload = {
-                mqtt_broker:    document.getElementById('cfgBroker').value.trim(),
-                mqtt_port:      parseInt(document.getElementById('cfgPort').value) || 1883,
-                mqtt_username:  document.getElementById('cfgUser').value.trim(),
-                mqtt_password:  document.getElementById('cfgPass').value,
-                mqtt_base_topic: document.getElementById('cfgTopic').value.trim() || 'zigbee2mqtt',
+                mqtt_broker:      document.getElementById('cfgBroker').value.trim(),
+                mqtt_port:        parseInt(document.getElementById('cfgPort').value) || 1883,
+                mqtt_username:    document.getElementById('cfgUser').value.trim(),
+                mqtt_password:    document.getElementById('cfgPass').value,
+                mqtt_base_topic:  document.getElementById('cfgTopic').value.trim() || 'zigbee2mqtt',
+                mqtt_use_tls:     document.getElementById('cfgUseTls').checked,
+                mqtt_tls_insecure: document.getElementById('cfgTlsInsecure').checked,
+                mqtt_tls_ca_cert: document.getElementById('cfgCaCert').value.trim(),
             };
             fetch('/api/config', {
                 method:  'POST',

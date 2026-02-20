@@ -15,4 +15,8 @@ services:
       - MQTT_USERNAME=your_user    # Optional
       - MQTT_PASSWORD=your_password # Optional
       - Z2M_BASE_TOPIC=zigbee2mqtt
+      # TLS/SSL options (optional)
+      # - MQTT_USE_TLS=true          # Enable TLS
+      # - MQTT_TLS_INSECURE=false    # Skip cert verification (not recommended)
+      # - MQTT_TLS_CA_CERT=/data/ca.crt  # Path to custom CA cert (mount it via volumes)
     restart: unless-stopped
