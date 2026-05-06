@@ -1,4 +1,10 @@
- Inovelli mmWave Visualizer — Standalone Docker
+## Inovelli mmWave Visualizer — Standalone Docker DO NOT USE, Instead use: https://github.com/nickduvall921/mmwave_vis
+
+## I will be removing this repo at some point. The main repo now works for docker
+
+
+
+
 
 **Live 2D presence tracking and interference zone configuration for Inovelli mmWave Smart Switches in Zigbee2MQTT.**
 
